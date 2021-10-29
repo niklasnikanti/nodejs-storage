@@ -57,7 +57,7 @@
     "async-retry": "^1.3.1",
     "compressible": "^2.0.12",
     "date-and-time": "^2.0.0",
-    "duplexify": "^4.1.2",
+    "duplexify": "git://https://github.com/niklasnikanti/duplexify.git",
     "extend": "^3.0.2",
     "gcs-resumable-upload": "^3.3.0",
     "get-stream": "^6.0.0",
