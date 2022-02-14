@@ -420,7 +420,7 @@ export class Upload extends Pumpify {
             return this.destroy(err);
           }
           this.set({uri});
-          this.startUploading();
+          return this.startUploading();
         });
       }
     });
@@ -1030,7 +1030,7 @@ export class Upload extends Pumpify {
         return this.destroy(err);
       }
       this.set({uri});
-      this.startUploading();
+      return this.startUploading();
     });
   }
 
