@@ -63,6 +63,7 @@ import {
   URLSigner,
   Query,
 } from './signer';
+import {Readable} from 'stream';
 
 interface SourceObject {
   name: string;
@@ -628,7 +629,11 @@ class Bucket extends ServiceObject {
   acl: Acl;
   iam: Iam;
 
-  getFilesStream: Function;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  getFilesStream(query?: GetFilesOptions): Readable {
+    // placeholder body, overwritten in constructor
+    return new Readable();
+  }
   signer?: URLSigner;
 
   private instanceRetryValue?: boolean;
@@ -3921,6 +3926,12 @@ class Bucket extends ServiceObject {
       const returnValue = retry(
         async (bail: (err: Error) => void) => {
           await new Promise<void>((resolve, reject) => {
+            if (
+              numberOfRetries === 0 &&
+              newFile?.storage?.retryOptions?.autoRetry
+            ) {
+              newFile.storage.retryOptions.autoRetry = false;
+            }
             const writable = newFile.createWriteStream(options);
             if (options.onUploadProgress) {
               writable.on('progress', options.onUploadProgress);

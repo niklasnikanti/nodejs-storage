@@ -35,7 +35,7 @@ import * as mime from 'mime';
 import * as os from 'os';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const pumpify = require('pumpify');
-import * as resumableUpload from 'gcs-resumable-upload';
+import * as resumableUpload from './gcs-resumable-upload';
 import {Duplex, Writable, Readable, PassThrough} from 'stream';
 import * as streamEvents from 'stream-events';
 import * as xdgBasedir from 'xdg-basedir';
@@ -190,6 +190,7 @@ export type PredefinedAcl =
   | 'publicRead';
 
 export interface CreateResumableUploadOptions {
+  chunkSize?: number;
   configPath?: string;
   metadata?: Metadata;
   origin?: string;
@@ -282,6 +283,7 @@ export enum ActionToHTTPMethod {
  */
 class ResumableUploadError extends Error {
   name = 'ResumableUploadError';
+  additionalInfo?: string;
 }
 
 /**
@@ -1555,6 +1557,9 @@ class File extends ServiceObject<File> {
    *     `options.predefinedAcl = 'publicRead'`)
    * @property {string} [userProject] The ID of the project which will be
    *     billed for the request.
+   * @property {string} [chunkSize] Create a separate request per chunk. Should
+   *     be a multiple of 256 KiB (2^18).
+   *     {@link https://cloud.google.com/storage/docs/performing-resumable-uploads#chunked-upload| We recommend using at least 8 MiB for the chunk size.}
    */
   /**
    * Create a unique resumable upload session URI. This is the first step when
@@ -1625,6 +1630,10 @@ class File extends ServiceObject<File> {
         apiEndpoint: this.storage.apiEndpoint,
         bucket: this.bucket.name,
         configPath: options.configPath,
+        customRequestOptions: this.getRequestInterceptors().reduce(
+          (reqOpts, interceptorFn) => interceptorFn(reqOpts),
+          {}
+        ),
         file: this.name,
         generation: this.generation,
         key: this.encryptionKey,
@@ -1910,6 +1919,9 @@ class File extends ServiceObject<File> {
           if (options.resumable) {
             // The user wanted a resumable upload, but we couldn't create a
             // configuration directory, which means gcs-resumable-upload will fail.
+
+            // Determine if the issue is that the directory does not exist or
+            // if the directory exists, but is not writable.
             const error = new ResumableUploadError(
               [
                 'A resumable upload could not be performed. The directory,',
@@ -1917,7 +1929,14 @@ class File extends ServiceObject<File> {
                 'this time setting `options.resumable` to `false`.',
               ].join(' ')
             );
-            stream.destroy(error);
+            fs.access(configDir, fs.constants.R_OK, noReadErr => {
+              if (noReadErr) {
+                error.additionalInfo = 'The directory does not exist.';
+              } else {
+                error.additionalInfo = 'The directory is read-only.';
+              }
+              stream.destroy(error);
+            });
           } else {
             // The user didn't care, resumable or not. Fall back to simple upload.
             this.startSimpleUpload_(fileWriteStream, options);
@@ -2139,11 +2158,12 @@ class File extends ServiceObject<File> {
     const fileStream = this.createReadStream(options);
 
     if (destination) {
-      fileStream
-        .on('error', callback)
-        .pipe(fs.createWriteStream(destination))
-        .on('error', callback)
-        .on('finish', callback);
+      fileStream.on('error', callback).once('data', data => {
+        // We know that the file exists the server
+        const writable = fs.createWriteStream(destination);
+        writable.write(data);
+        fileStream.pipe(writable).on('error', callback).on('finish', callback);
+      });
     } else {
       getStream
         .buffer(fileStream)
@@ -3756,6 +3776,9 @@ class File extends ServiceObject<File> {
     const returnValue = retry(
       async (bail: (err: Error) => void) => {
         await new Promise<void>((resolve, reject) => {
+          if (maxRetries === 0) {
+            this.storage.retryOptions.autoRetry = false;
+          }
           const writable = this.createWriteStream(options)
             .on('error', err => {
               if (
@@ -3961,6 +3984,7 @@ class File extends ServiceObject<File> {
       userProject: options.userProject || this.userProject,
       retryOptions: retryOptions,
       params: options?.preconditionOpts || this.instancePreconditionOpts,
+      chunkSize: options?.chunkSize,
     });
 
     uploadStream
@@ -4081,7 +4105,13 @@ class File extends ServiceObject<File> {
  * that a callback is omitted.
  */
 promisifyAll(File, {
-  exclude: ['publicUrl', 'request', 'save', 'setEncryptionKey'],
+  exclude: [
+    'publicUrl',
+    'request',
+    'save',
+    'setEncryptionKey',
+    'shouldRetryBasedOnPreconditionAndIdempotencyStrat',
+  ],
 });
 
 /**

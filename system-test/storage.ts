@@ -84,6 +84,7 @@ import {
 } from '../src';
 import * as nock from 'nock';
 import {Transform} from 'stream';
+import {gzipSync} from 'zlib';
 
 interface ErrorCallbackFunction {
   (err: Error | null): void;
@@ -131,12 +132,6 @@ describe('storage', () => {
     },
     html: {
       path: path.join(__dirname, '../../system-test/data/long-html-file.html'),
-    },
-    gzip: {
-      path: path.join(
-        __dirname,
-        '../../system-test/data/long-html-file.html.gz'
-      ),
     },
   };
 
@@ -945,6 +940,41 @@ describe('storage', () => {
         updatedBucketMetadata.iamConfiguration.uniformBucketLevelAccess.enabled,
         ublaSetting
       );
+    });
+  });
+
+  describe('turbo replication', () => {
+    let bucket: Bucket;
+
+    const RPO_ASYNC_TURBO = 'ASYNC_TURBO';
+    const RPO_DEFAULT = 'DEFAULT';
+
+    const createBucket = () => {
+      bucket = storage.bucket(generateName());
+      return bucket.create({location: 'NAM4'});
+    };
+
+    const setTurboReplication = (
+      bucket: Bucket,
+      turboReplicationConfiguration: string
+    ) => {
+      return bucket.setMetadata({
+        rpo: turboReplicationConfiguration,
+      });
+    };
+
+    beforeEach(createBucket);
+
+    it("sets bucket's RPO to ASYNC_TURBO", async () => {
+      await setTurboReplication(bucket, RPO_ASYNC_TURBO);
+      const [bucketMetadata] = await bucket.getMetadata();
+      return assert.strictEqual(bucketMetadata.rpo, RPO_ASYNC_TURBO);
+    });
+
+    it("sets a bucket's RPO to DEFAULT", async () => {
+      await setTurboReplication(bucket, RPO_DEFAULT);
+      const [bucketMetadata] = await bucket.getMetadata();
+      return assert.strictEqual(bucketMetadata.rpo, RPO_DEFAULT);
     });
   });
 
@@ -2310,6 +2340,9 @@ describe('storage', () => {
   });
 
   describe('write, read, and remove files', () => {
+    const FILE_DOWNLOAD_START_BYTE = 0;
+    const FILE_DOWNLOAD_END_BYTE = 20;
+
     before(async () => {
       function setHash(filesKey: string) {
         const file = FILES[filesKey];
@@ -2442,6 +2475,24 @@ describe('storage', () => {
       });
     });
 
+    it('should download the specified bytes of a file', done => {
+      const fileContents = fs.readFileSync(FILES.big.path);
+      bucket.upload(FILES.big.path, (err: Error | null, file?: File | null) => {
+        assert.ifError(err);
+        file!.download(
+          {start: FILE_DOWNLOAD_START_BYTE, end: FILE_DOWNLOAD_END_BYTE},
+          (err, remoteContents) => {
+            assert.ifError(err);
+            assert.strictEqual(
+              String(fileContents).slice(0, 20),
+              String(remoteContents)
+            );
+            done();
+          }
+        );
+      });
+    });
+
     it('should handle non-network errors', done => {
       const file = bucket.file('hi.jpg');
       file.download(err => {
@@ -2465,7 +2516,7 @@ describe('storage', () => {
       });
     });
 
-    it('should upload a gzipped file and download it', done => {
+    it('should upload a gzipped file and download it', async () => {
       const options = {
         metadata: {
           contentEncoding: 'gzip',
@@ -2473,33 +2524,29 @@ describe('storage', () => {
         },
       };
 
-      const expectedContents = fs
-        .readFileSync(FILES.html.path, 'utf-8')
-        // eslint-disable-next-line no-control-regex
-        .replace(new RegExp('\r\n', 'g'), '\n');
+      const expectedContents = fs.readFileSync(FILES.html.path, 'utf-8');
 
-      bucket.upload(FILES.gzip.path, options, (err, file) => {
-        assert.ifError(err);
+      // Prepare temporary gzip file for upload
+      tmp.setGracefulCleanup();
+      const {name: tmpGzFilePath} = tmp.fileSync({postfix: '.gz'});
+      fs.writeFileSync(tmpGzFilePath, gzipSync(expectedContents));
 
-        // Sometimes this file is not found immediately; include some
-        // retry to attempt to make the test less flaky.
-        let attempt = 0;
-        const downloadCallback = (err: Error | null, contents: {}) => {
-          // If we got an error, gracefully retry a few times.
-          if (err) {
-            attempt += 1;
-            if (attempt >= 5) {
-              return assert.ifError(err);
-            }
-            return file!.download(downloadCallback);
-          }
-
-          // Ensure the contents match.
-          assert.strictEqual(contents.toString(), expectedContents);
-          file!.delete(done);
-        };
-        file!.download(downloadCallback);
+      const file: File = await new Promise((resolve, reject) => {
+        bucket.upload(tmpGzFilePath, options, (err, file) => {
+          if (err || !file) return reject(err);
+          resolve(file);
+        });
       });
+
+      const contents: Buffer = await new Promise((resolve, reject) => {
+        return file.download((error, content) => {
+          if (error) return reject(error);
+          resolve(content);
+        });
+      });
+
+      assert.strictEqual(contents.toString(), expectedContents);
+      await file.delete();
     });
 
     it('should skip validation if file is served decompressed', async () => {

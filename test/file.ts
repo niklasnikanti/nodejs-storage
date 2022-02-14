@@ -32,7 +32,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as proxyquire from 'proxyquire';
-import * as resumableUpload from 'gcs-resumable-upload';
+import * as resumableUpload from '../src/gcs-resumable-upload';
 import * as sinon from 'sinon';
 import * as tmp from 'tmp';
 import * as zlib from 'zlib';
@@ -63,6 +63,10 @@ class HTTPError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+class ResumableUploadError extends Error {
+  additionalInfo?: string;
 }
 
 let promisified = false;
@@ -97,6 +101,7 @@ const fakePromisify = {
       'request',
       'save',
       'setEncryptionKey',
+      'shouldRetryBasedOnPreconditionAndIdempotencyStrat',
     ]);
   },
 };
@@ -205,7 +210,7 @@ describe('File', () => {
       },
       '@google-cloud/promisify': fakePromisify,
       fs: fakeFs,
-      'gcs-resumable-upload': fakeResumableUpload,
+      '../src/gcs-resumable-upload': fakeResumableUpload,
       'hash-stream-validation': fakeHashStreamValidation,
       os: fakeOs,
       './signer': fakeSigner,
@@ -2130,7 +2135,7 @@ describe('File', () => {
 
         const writable = file.createWriteStream({resumable: true});
 
-        writable.on('error', (err: Error) => {
+        writable.on('error', (err: ResumableUploadError) => {
           assert.strictEqual(err.name, 'ResumableUploadError');
           assert.strictEqual(
             err.message,
@@ -2139,6 +2144,10 @@ describe('File', () => {
               `${CONFIG_DIR}, is not writable. You may try another upload,`,
               'this time setting `options.resumable` to `false`.',
             ].join(' ')
+          );
+          assert.strictEqual(
+            err.additionalInfo,
+            'The directory does not exist.'
           );
 
           done();
@@ -2699,6 +2708,61 @@ describe('File', () => {
             fs.readFile(tmpFilePath, (err, tmpFileContents) => {
               assert.ifError(err);
 
+              assert.strictEqual(fileContents, tmpFileContents.toString());
+              done();
+            });
+          });
+        });
+      });
+
+      it('should process the entire stream', done => {
+        tmp.setGracefulCleanup();
+        tmp.file(async (err, tmpFilePath) => {
+          assert.ifError(err);
+
+          const fileContents = 'abcdefghijklmnopqrstuvwxyz';
+
+          fileReadStream.on('resume', () => {
+            fileReadStream.emit('data', fileContents);
+            fileReadStream.emit('data', fileContents);
+            setImmediate(() => {
+              fileReadStream.emit('end');
+            });
+          });
+
+          file.download({destination: tmpFilePath}, (err: Error) => {
+            assert.ifError(err);
+            fs.readFile(tmpFilePath, (err, tmpFileContents) => {
+              assert.ifError(err);
+              assert.strictEqual(
+                fileContents + fileContents,
+                tmpFileContents.toString()
+              );
+              done();
+            });
+          });
+        });
+      });
+
+      it('file contents should remain unchanged if file nonexistent', done => {
+        tmp.setGracefulCleanup();
+        tmp.file(async (err, tmpFilePath) => {
+          assert.ifError(err);
+
+          const fileContents = 'file contents that should remain unchanged';
+          fs.writeFileSync(tmpFilePath, fileContents, 'utf-8');
+
+          const error = new Error('Error.');
+          fileReadStream.on('resume', () => {
+            setImmediate(() => {
+              fileReadStream.emit('error', error);
+            });
+          });
+
+          file.download({destination: tmpFilePath}, (err: Error) => {
+            assert.strictEqual(err, error);
+            fs.readFile(tmpFilePath, (err, tmpFileContents) => {
+              assert.ifError(err);
               assert.strictEqual(fileContents, tmpFileContents.toString());
               done();
             });
@@ -4698,6 +4762,7 @@ describe('File', () => {
           predefinedAcl: 'allUsers',
           uri: 'http://resumable-uri',
           userProject: 'user-project-id',
+          chunkSize: 262144, // 256 KiB
         };
 
         file.generation = 3;
@@ -4751,6 +4816,7 @@ describe('File', () => {
             assert.strictEqual(opts.userProject, options.userProject);
             assert.strictEqual(opts.retryOptions, storage.retryOptions);
             assert.strictEqual(opts.params, storage.preconditionOpts);
+            assert.strictEqual(opts.chunkSize, options.chunkSize);
 
             setImmediate(done);
             return new PassThrough();

@@ -1,4 +1,4 @@
-// Copyright 2021 Google LLC
+// Copyright 2022 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,29 +21,32 @@
  */
 
 function main(bucketName = 'my-bucket') {
-  // [START storage_set_public_access_prevention_unspecified]
+  // [START storage_get_rpo]
   /**
    * TODO(developer): Uncomment the following lines before running the sample.
    */
-  // The name of your GCS bucket
+  // The name of your GCS bucket in a dual-region
   // const bucketName = 'Name of a bucket, e.g. my-bucket';
+
   // Imports the Google Cloud client library
   const {Storage} = require('@google-cloud/storage');
 
   // Creates a client
   const storage = new Storage();
-  async function setPublicAccessPreventionUnspecified() {
-    // Sets public access prevention to 'unspecified' for the bucket
-    await storage.bucket(bucketName).setMetadata({
-      iamConfiguration: {
-        publicAccessPrevention: 'unspecified',
-      },
-    });
 
-    console.log(`Public access prevention is 'unspecified' for ${bucketName}.`);
+  async function getRPO() {
+    // Gets Bucket Metadata and prints RPO value (either 'default' or 'async_turbo').
+    // If RPO is undefined, the bucket is a single region bucket
+    const [metadata] = await storage.bucket(bucketName).getMetadata();
+    console.log(`RPO is ${metadata.rpo} for ${bucketName}.`);
   }
 
-  setPublicAccessPreventionUnspecified();
-  // [END storage_set_public_access_prevention_unspecified]
+  getRPO();
+
+  // [END storage_get_rpo]
 }
+process.on('unhandledRejection', err => {
+  console.error(err.message);
+  process.exitCode = 1;
+});
 main(...process.argv.slice(2));

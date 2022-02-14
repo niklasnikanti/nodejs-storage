@@ -118,15 +118,16 @@ export interface CreateBucketRequest {
   coldline?: boolean;
   cors?: Cors[];
   dra?: boolean;
+  location?: string;
   multiRegional?: boolean;
   nearline?: boolean;
   regional?: boolean;
   requesterPays?: boolean;
   retentionPolicy?: object;
+  rpo?: string;
   standard?: boolean;
   storageClass?: string;
   userProject?: string;
-  location?: string;
   versioning?: Versioning;
 }
 
@@ -265,7 +266,7 @@ const RETRYABLE_ERR_FN_DEFAULT = function (err?: ApiError) {
 
     if (err.errors) {
       for (const e of err.errors) {
-        const reason = e?.reason?.toLowerCase();
+        const reason = e?.reason?.toString().toLowerCase();
         if (
           (reason && reason.includes('eai_again')) || //DNS lookup error
           reason === 'econnreset' ||
@@ -469,8 +470,15 @@ export class Storage extends Service {
    */
   acl: typeof Storage.acl;
 
-  getBucketsStream: () => Readable;
-  getHmacKeysStream: () => Readable;
+  getBucketsStream(): Readable {
+    // placeholder body, overwritten in constructor
+    return new Readable();
+  }
+
+  getHmacKeysStream(): Readable {
+    // placeholder body, overwritten in constructor
+    return new Readable();
+  }
 
   retryOptions: RetryOptions;
 
@@ -732,6 +740,7 @@ export class Storage extends Service {
    * @property {Cors[]} [cors=[]] Specify the CORS configuration to use.
    * @property {boolean} [dra=false] Specify the storage class as Durable Reduced
    *     Availability.
+   * @property {string} [location] Specify the location / region in which to create the bucket.
    * @property {boolean} [multiRegional=false] Specify the storage class as
    *     Multi-Regional.
    * @property {boolean} [nearline=false] Specify the storage class as Nearline.
@@ -739,6 +748,8 @@ export class Storage extends Service {
    * @property {boolean} [requesterPays=false] **Early Access Testers Only**
    *     Force the use of the User Project metadata field to assign operational
    *     costs when an operation is made on a Bucket and its objects.
+   * @property {string} [rpo] For dual region buckets, controls whether turbo
+   *      replication is enabled (`ASYNC_TURBO`) or disabled (`DEFAULT`).
    * @property {boolean} [standard=true] Specify the storage class as Standard.
    * @property {string} [storageClass] The new storage class. (`standard`,
    *     `nearline`, `coldline`, or `archive`).
